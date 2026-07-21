@@ -1,0 +1,34 @@
+---
+# Deploy detection app to Splunk server.
+- name: Deploy SOC Lab detection app
+  hosts: splunk_server
+  become: true
+  become_user: splunk
+  tasks:
+    - name: Sync soclab_detections app to Splunk apps dir
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../../splunk/apps/soclab_detections/"
+        dest: "{{ splunk_home }}/etc/apps/soclab_detections/"
+        mode: preserve
+      notify: Restart Splunk
+
+    # Ensure notable index exists (used by savedsearches action.notable)
+    - name: Ensure notable index in indexes.conf
+      ansible.builtin.blockinfile:
+        path: "{{ splunk_home }}/etc/system/local/indexes.conf"
+        marker: "# {mark} SOCLAB NOTABLE INDEX"
+        block: |
+          [notable]
+          homePath   = $SPLUNK_DB/notable/db
+          coldPath   = $SPLUNK_DB/notable/colddb
+          thawedPath = $SPLUNK_DB/notable/thaweddb
+          maxTotalDataSizeMB = 5120
+      become_user: root
+      notify: Restart Splunk
+
+  handlers:
+    - name: Restart Splunk
+      ansible.builtin.systemd:
+        name: Splunkd
+        state: restarted
+      become_user: root
