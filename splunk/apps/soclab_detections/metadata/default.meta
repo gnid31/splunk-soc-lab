@@ -7,3 +7,9 @@ export = system
 
 [views]
 export = system
+
+[props]
+export = system
+
+[transforms]
+export = system

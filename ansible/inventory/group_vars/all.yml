@@ -16,4 +16,4 @@ splunk_indexes:
   - suricata
   - zeek
 
-splunk_admin_password: "{{ vault_splunk_admin_password | default('ChangeMe_SoCLab_2026!') }}"
+splunk_admin_password: "{{ vault_splunk_admin_password }}"
