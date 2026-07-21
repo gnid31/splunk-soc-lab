@@ -1,0 +1,296 @@
+---
+# Deploy Ubuntu endpoint: Splunk UF + auditd + Suricata + Zeek.
+# Forwards to VPS Splunk indexer on port 9997.
+- name: Deploy Linux endpoint stack
+  hosts: linux_endpoints
+  become: true
+  vars:
+    splunk_uf_deb_url: "https://download.splunk.com/products/universalforwarder/releases/{{ splunk_uf_version }}/linux/splunkforwarder-{{ splunk_uf_version }}-{{ splunk_uf_build }}-linux-amd64.deb"
+    splunk_uf_deb_path: "/tmp/splunkforwarder-{{ splunk_uf_version }}.deb"
+    monitor_iface: "ens33"
+
+  tasks:
+    # -------------------- Splunk Universal Forwarder --------------------
+    - name: Ensure prerequisites
+      ansible.builtin.apt:
+        name: [curl, gnupg, ca-certificates, software-properties-common, auditd, audispd-plugins]
+        state: present
+        update_cache: true
+
+    - name: Check if Splunk UF already installed
+      ansible.builtin.stat:
+        path: "{{ splunkforwarder_home }}/bin/splunk"
+      register: uf_bin
+
+    - name: Download Splunk UF .deb
+      ansible.builtin.get_url:
+        url: "{{ splunk_uf_deb_url }}"
+        dest: "{{ splunk_uf_deb_path }}"
+        mode: "0644"
+        timeout: 600
+      when: not uf_bin.stat.exists
+
+    - name: Install Splunk UF .deb
+      ansible.builtin.apt:
+        deb: "{{ splunk_uf_deb_path }}"
+        state: present
+      when: not uf_bin.stat.exists
+
+    - name: Seed admin password for UF
+      ansible.builtin.copy:
+        dest: "{{ splunkforwarder_home }}/etc/system/local/user-seed.conf"
+        content: |
+          [user_info]
+          USERNAME = admin
+          PASSWORD = {{ splunk_admin_password }}
+        owner: splunkfwd
+        group: splunkfwd
+        mode: "0600"
+      when: not uf_bin.stat.exists
+
+    - name: Initial start of UF
+      ansible.builtin.command: >
+        {{ splunkforwarder_home }}/bin/splunk start --accept-license --answer-yes --no-prompt
+      args:
+        creates: "{{ splunkforwarder_home }}/etc/auth/splunk.secret"
+      become_user: splunkfwd
+
+    - name: Check if UF systemd unit exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/SplunkForwarder.service
+      register: uf_unit
+
+    - name: Stop UF before enable boot-start
+      ansible.builtin.command: "{{ splunkforwarder_home }}/bin/splunk stop"
+      become_user: splunkfwd
+      when: not uf_unit.stat.exists
+      changed_when: true
+
+    - name: Enable UF boot-start (systemd)
+      ansible.builtin.command: >
+        {{ splunkforwarder_home }}/bin/splunk enable boot-start
+        -user splunkfwd -group splunkfwd -systemd-managed 1
+        --accept-license --answer-yes --no-prompt
+      args:
+        creates: /etc/systemd/system/SplunkForwarder.service
+
+    - name: Configure UF forward-server
+      ansible.builtin.copy:
+        dest: "{{ splunkforwarder_home }}/etc/system/local/outputs.conf"
+        content: |
+          [tcpout]
+          defaultGroup = soclab_indexers
+
+          [tcpout:soclab_indexers]
+          server = {{ splunk_forward_host }}:{{ splunk_forward_port }}
+
+          [tcpout-server://{{ splunk_forward_host }}:{{ splunk_forward_port }}]
+        owner: splunkfwd
+        group: splunkfwd
+        mode: "0644"
+      notify: Restart UF
+
+    - name: Configure UF inputs (auditd, suricata, zeek, syslog)
+      ansible.builtin.copy:
+        dest: "{{ splunkforwarder_home }}/etc/system/local/inputs.conf"
+        content: |
+          [default]
+          host = {{ inventory_hostname }}
+
+          [monitor:///var/log/audit/audit.log]
+          index = linux_auditd
+          sourcetype = linux:audit
+          disabled = 0
+
+          [monitor:///var/log/suricata/eve.json]
+          index = suricata
+          sourcetype = suricata:eve
+          disabled = 0
+
+          [monitor:///opt/zeek/logs/current/*.log]
+          index = zeek
+          sourcetype = zeek:log
+          disabled = 0
+
+          [monitor:///var/log/syslog]
+          index = linux_auditd
+          sourcetype = linux:syslog
+          disabled = 0
+
+          [monitor:///var/log/auth.log]
+          index = linux_auditd
+          sourcetype = linux:auth
+          disabled = 0
+        owner: splunkfwd
+        group: splunkfwd
+        mode: "0644"
+      notify: Restart UF
+
+    - name: Allow splunkfwd to read log files (ACL)
+      ansible.posix.acl:
+        path: "{{ item }}"
+        entity: splunkfwd
+        etype: user
+        permissions: r
+        recursive: true
+        state: present
+      loop:
+        - /var/log
+      ignore_errors: true
+
+    - name: Ensure UF running
+      ansible.builtin.systemd:
+        name: SplunkForwarder
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    # -------------------- auditd rules --------------------
+    - name: Deploy auditd rules (MITRE-aligned)
+      ansible.builtin.copy:
+        dest: /etc/audit/rules.d/soclab.rules
+        content: |
+          # SOC lab auditd rules — MITRE ATT&CK aligned
+          -D
+          -b 8192
+          -f 1
+
+          # T1059.004 - unix shell execution
+          -a always,exit -F arch=b64 -S execve -F euid=0 -k root_exec
+          -a always,exit -F arch=b64 -S execve -F auid>=1000 -F auid!=4294967295 -k user_exec
+
+          # T1003 - credential access
+          -w /etc/shadow -p wa -k shadow_write
+          -w /etc/passwd -p wa -k passwd_write
+          -w /etc/sudoers -p wa -k sudoers
+          -w /etc/sudoers.d/ -p wa -k sudoers
+
+          # T1053.003 - cron persistence
+          -w /etc/cron.d/ -p wa -k cron_persist
+          -w /etc/cron.daily/ -p wa -k cron_persist
+          -w /etc/cron.hourly/ -p wa -k cron_persist
+          -w /var/spool/cron/ -p wa -k cron_persist
+          -w /etc/crontab -p wa -k cron_persist
+
+          # T1547 - persistence via systemd/rc
+          -w /etc/systemd/ -p wa -k systemd_persist
+          -w /etc/rc.local -p wa -k rc_persist
+
+          # T1098 - account manipulation
+          -w /usr/sbin/useradd -p x -k useradd_exec
+          -w /usr/sbin/usermod -p x -k usermod_exec
+          -w /usr/sbin/passwd -p x -k passwd_exec
+
+          # T1136 - user creation
+          -w /etc/group -p wa -k group_write
+
+          # T1070 - defense evasion, log deletion
+          -w /var/log/ -p wa -k log_tamper
+          -w /var/log/audit/ -p wa -k audit_tamper
+
+          # SSH activity
+          -w /root/.ssh/ -p wa -k ssh_key_root
+          -w /home/ -p wa -k ssh_key_user
+        mode: "0640"
+      notify: Restart auditd
+
+    # -------------------- Suricata --------------------
+    - name: Install Suricata
+      ansible.builtin.apt:
+        name: suricata
+        state: present
+
+    - name: Configure Suricata (AF_PACKET single-worker, JSON eve output)
+      ansible.builtin.copy:
+        dest: /etc/suricata/suricata.yaml.d/soclab.yaml
+        content: |
+          %YAML 1.1
+          ---
+          # Minimal override for SOC lab
+        mode: "0644"
+      ignore_errors: true
+
+    - name: Point Suricata to monitor interface
+      ansible.builtin.lineinfile:
+        path: /etc/default/suricata
+        regexp: "^IFACE="
+        line: "IFACE={{ monitor_iface }}"
+        create: true
+        mode: "0644"
+
+    - name: Enable Suricata
+      ansible.builtin.lineinfile:
+        path: /etc/default/suricata
+        regexp: "^RUN="
+        line: "RUN=yes"
+
+    - name: Update Suricata rules (suricata-update)
+      ansible.builtin.command: suricata-update --quiet
+      register: sup_result
+      changed_when: "'Wrote' in sup_result.stdout or 'Downloaded' in sup_result.stdout"
+      failed_when: false
+
+    - name: Start Suricata
+      ansible.builtin.systemd:
+        name: suricata
+        state: started
+        enabled: true
+      ignore_errors: true
+
+    # -------------------- Zeek --------------------
+    - name: Add Zeek OpenSUSE OBS repo key
+      ansible.builtin.shell: |
+        curl -fsSL https://download.opensuse.org/repositories/security:zeek/xUbuntu_22.04/Release.key \
+          | gpg --dearmor -o /usr/share/keyrings/zeek-archive-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/zeek-archive-keyring.gpg
+
+    - name: Add Zeek APT repo
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/zeek.list
+        content: |
+          deb [signed-by=/usr/share/keyrings/zeek-archive-keyring.gpg] https://download.opensuse.org/repositories/security:/zeek/xUbuntu_22.04/ /
+        mode: "0644"
+
+    - name: Install Zeek
+      ansible.builtin.apt:
+        name: zeek
+        state: present
+        update_cache: true
+      register: zeek_install
+      failed_when: false
+
+    - name: Configure Zeek node.cfg
+      ansible.builtin.copy:
+        dest: /opt/zeek/etc/node.cfg
+        content: |
+          [zeek]
+          type=standalone
+          host=localhost
+          interface={{ monitor_iface }}
+        mode: "0644"
+      when: zeek_install is succeeded
+
+    - name: Configure Zeek JSON logging
+      ansible.builtin.copy:
+        dest: /opt/zeek/share/zeek/site/local.zeek.d/soclab-json.zeek
+        content: |
+          @load policy/tuning/json-logs.zeek
+        mode: "0644"
+      ignore_errors: true
+
+    - name: Start Zeek via zeekctl
+      ansible.builtin.shell: |
+        /opt/zeek/bin/zeekctl deploy
+      register: zeek_deploy
+      changed_when: "'started' in zeek_deploy.stdout | lower"
+      failed_when: false
+
+  handlers:
+    - name: Restart UF
+      ansible.builtin.systemd:
+        name: SplunkForwarder
+        state: restarted
+
+    - name: Restart auditd
+      ansible.builtin.command: service auditd restart
