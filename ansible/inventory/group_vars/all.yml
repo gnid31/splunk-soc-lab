@@ -1,8 +1,8 @@
 ---
-splunk_version: "9.3.1"
-splunk_build: "0b8748f38ee0"
-splunk_uf_version: "9.3.1"
-splunk_uf_build: "0b8748f38ee0"
+splunk_version: "10.4.1"
+splunk_build: "5a009d941268"
+splunk_uf_version: "10.4.1"
+splunk_uf_build: "5a009d941268"
 
 splunk_home: /opt/splunk
 splunkforwarder_home: /opt/splunkforwarder

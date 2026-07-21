@@ -1,0 +1,141 @@
+---
+# Deploy Splunk Enterprise on the VPS using the official .deb package.
+# Idempotent: safe to re-run.
+- name: Deploy Splunk Enterprise on VPS
+  hosts: splunk_server
+  become: true
+  vars:
+    splunk_deb_url: "https://download.splunk.com/products/splunk/releases/{{ splunk_version }}/linux/splunk-{{ splunk_version }}-{{ splunk_build }}-linux-amd64.deb"
+    splunk_deb_path: "/tmp/splunk-{{ splunk_version }}.deb"
+
+  tasks:
+    - name: Ensure prerequisites
+      ansible.builtin.apt:
+        name: [curl, ufw, acl, python3-apt]
+        state: present
+        update_cache: true
+
+    - name: Check if Splunk already installed
+      ansible.builtin.stat:
+        path: "{{ splunk_home }}/bin/splunk"
+      register: splunk_bin
+
+    - name: Download Splunk .deb
+      ansible.builtin.get_url:
+        url: "{{ splunk_deb_url }}"
+        dest: "{{ splunk_deb_path }}"
+        mode: "0644"
+        timeout: 600
+      when: not splunk_bin.stat.exists
+
+    - name: Install Splunk .deb
+      ansible.builtin.apt:
+        deb: "{{ splunk_deb_path }}"
+        state: present
+      when: not splunk_bin.stat.exists
+
+    - name: Ensure splunk user owns install dir
+      ansible.builtin.file:
+        path: "{{ splunk_home }}"
+        owner: "{{ splunk_user }}"
+        group: "{{ splunk_group }}"
+        recurse: true
+      when: not splunk_bin.stat.exists
+
+    - name: Create user-seed.conf for admin password
+      ansible.builtin.copy:
+        dest: "{{ splunk_home }}/etc/system/local/user-seed.conf"
+        content: |
+          [user_info]
+          USERNAME = {{ splunk_admin_user }}
+          PASSWORD = {{ splunk_admin_password }}
+        owner: "{{ splunk_user }}"
+        group: "{{ splunk_group }}"
+        mode: "0600"
+      when: not splunk_bin.stat.exists
+
+    - name: Accept license and initial start
+      ansible.builtin.command: >
+        {{ splunk_home }}/bin/splunk start --accept-license --answer-yes --no-prompt
+      args:
+        creates: "{{ splunk_home }}/etc/auth/splunk.secret"
+      become_user: "{{ splunk_user }}"
+
+    - name: Check if systemd unit already created
+      ansible.builtin.stat:
+        path: /etc/systemd/system/Splunkd.service
+      register: splunkd_unit
+
+    - name: Stop Splunk before enabling boot-start (first-time only)
+      ansible.builtin.command: "{{ splunk_home }}/bin/splunk stop"
+      become_user: "{{ splunk_user }}"
+      when: not splunkd_unit.stat.exists
+      changed_when: true
+
+    - name: Enable boot-start (systemd-managed)
+      ansible.builtin.command: >
+        {{ splunk_home }}/bin/splunk enable boot-start
+        -user {{ splunk_user }}
+        -group {{ splunk_group }}
+        -systemd-managed 1
+        --accept-license --answer-yes --no-prompt
+      args:
+        creates: /etc/systemd/system/Splunkd.service
+
+    - name: Ensure Splunk service running
+      ansible.builtin.systemd:
+        name: Splunkd
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for Splunk mgmt port
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: "{{ splunk_mgmt_port }}"
+        timeout: 120
+
+    - name: Enable receiver on port 9997
+      ansible.builtin.command: >
+        {{ splunk_home }}/bin/splunk enable listen {{ splunk_receiver_port }}
+        -auth {{ splunk_admin_user }}:{{ splunk_admin_password }}
+      register: recv_result
+      changed_when: "'Listening for' in recv_result.stdout"
+      failed_when:
+        - recv_result.rc != 0
+        - "'already listening' not in recv_result.stdout.lower()"
+        - "'already in use' not in recv_result.stderr.lower()"
+
+    - name: Create indexes
+      ansible.builtin.copy:
+        dest: "{{ splunk_home }}/etc/system/local/indexes.conf"
+        content: |
+          {% for idx in splunk_indexes %}
+          [{{ idx }}]
+          homePath   = $SPLUNK_DB/{{ idx }}/db
+          coldPath   = $SPLUNK_DB/{{ idx }}/colddb
+          thawedPath = $SPLUNK_DB/{{ idx }}/thaweddb
+          maxTotalDataSizeMB = 5120
+          frozenTimePeriodInSecs = 7776000
+
+          {% endfor %}
+        owner: "{{ splunk_user }}"
+        group: "{{ splunk_group }}"
+        mode: "0644"
+      notify: Restart Splunk
+
+    - name: Open firewall for Splunk (UFW)
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "{{ splunk_web_port | string }}"
+        - "{{ splunk_receiver_port | string }}"
+      ignore_errors: true
+
+  handlers:
+    - name: Restart Splunk
+      ansible.builtin.systemd:
+        name: Splunkd
+        state: restarted
