@@ -1,0 +1,103 @@
+---
+# Time sync across all lab hosts. Ensures Splunk correlation windows work correctly.
+- name: Configure NTP on Linux hosts (VPS + Ubuntu endpoint)
+  hosts: splunk_server:linux_endpoints
+  become: true
+  vars:
+    ntp_servers:
+      - 0.vn.pool.ntp.org
+      - 1.vn.pool.ntp.org
+      - 2.asia.pool.ntp.org
+      - time.google.com
+
+  tasks:
+    - name: Install chrony
+      ansible.builtin.apt:
+        name: chrony
+        state: present
+        update_cache: true
+
+    - name: Configure chrony servers
+      ansible.builtin.copy:
+        dest: /etc/chrony/chrony.conf
+        content: |
+          # Managed by soclab Ansible — do not edit by hand.
+          {% for s in ntp_servers %}
+          server {{ s }} iburst
+          {% endfor %}
+
+          driftfile /var/lib/chrony/chrony.drift
+          makestep 1.0 3
+          rtcsync
+          logdir /var/log/chrony
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart chrony
+
+    - name: Ensure chrony service running + enabled
+      ansible.builtin.systemd:
+        name: chrony
+        state: started
+        enabled: true
+
+    - name: Set timezone to UTC (for consistent Splunk timestamps)
+      community.general.timezone:
+        name: UTC
+
+    - name: Force initial sync
+      ansible.builtin.command: chronyc -a makestep
+      changed_when: true
+
+    - name: Show current sync status
+      ansible.builtin.command: chronyc tracking
+      register: chrony_status
+      changed_when: false
+
+    - name: Display sync status
+      ansible.builtin.debug:
+        var: chrony_status.stdout_lines
+
+  handlers:
+    - name: Restart chrony
+      ansible.builtin.systemd:
+        name: chrony
+        state: restarted
+
+
+- name: Configure Windows Time service
+  hosts: windows_endpoints
+  vars:
+    ntp_servers_win: "0.vn.pool.ntp.org,0x9 1.vn.pool.ntp.org,0x9 time.google.com,0x9"
+
+  tasks:
+    - name: Ensure w32time service running (must be started to accept config)
+      ansible.windows.win_service:
+        name: w32time
+        state: started
+        start_mode: auto
+
+    - name: Configure NTP servers via w32tm
+      ansible.windows.win_command: >
+        w32tm /config /manualpeerlist:"{{ ntp_servers_win }}"
+        /syncfromflags:manual /reliable:yes /update
+
+    - name: Restart w32time to pick up new config
+      ansible.windows.win_service:
+        name: w32time
+        state: restarted
+
+    - name: Force resync
+      ansible.windows.win_command: w32tm /resync /force
+      register: w32sync
+      changed_when: true
+      failed_when: false
+
+    - name: Show sync status
+      ansible.windows.win_command: w32tm /query /status
+      register: w32status
+      changed_when: false
+
+    - name: Display Windows sync status
+      ansible.builtin.debug:
+        var: w32status.stdout_lines

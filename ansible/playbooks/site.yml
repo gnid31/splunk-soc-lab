@@ -1,5 +1,6 @@
 ---
 # Full lab deployment — runs all phases in order.
+- import_playbook: 05-time-sync.yml
 - import_playbook: 01-splunk-server.yml
 - import_playbook: 02-linux-endpoint.yml
 - import_playbook: 03-windows-endpoint.yml
