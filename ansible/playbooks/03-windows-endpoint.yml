@@ -1,0 +1,155 @@
+---
+# Deploy Windows endpoint: Splunk UF + Sysmon (Olaf modular config).
+- name: Deploy Windows endpoint stack
+  hosts: windows_endpoints
+  gather_facts: true
+  vars:
+    splunk_uf_msi_url: "https://download.splunk.com/products/universalforwarder/releases/{{ splunk_uf_version }}/windows/splunkforwarder-{{ splunk_uf_version }}-{{ splunk_uf_build }}-windows-x64.msi"
+    splunk_uf_msi_path: 'C:\Windows\Temp\splunkforwarder.msi'
+    splunkforwarder_win_home: 'C:\Program Files\SplunkUniversalForwarder'
+    sysmon_zip_url: "https://download.sysinternals.com/files/Sysmon.zip"
+    sysmon_config_url: "https://raw.githubusercontent.com/olafhartong/sysmon-modular/master/sysmonconfig.xml"
+    sysmon_dir: 'C:\Sysmon'
+
+  tasks:
+    # -------------------- Splunk Universal Forwarder --------------------
+    - name: Check UF already installed
+      ansible.windows.win_stat:
+        path: "{{ splunkforwarder_win_home }}\\bin\\splunk.exe"
+      register: uf_win_bin
+
+    - name: Download Splunk UF MSI
+      ansible.windows.win_get_url:
+        url: "{{ splunk_uf_msi_url }}"
+        dest: "{{ splunk_uf_msi_path }}"
+        timeout: 600
+      when: not uf_win_bin.stat.exists
+
+    - name: Install Splunk UF MSI (silent)
+      ansible.windows.win_package:
+        path: "{{ splunk_uf_msi_path }}"
+        arguments: >
+          AGREETOLICENSE=Yes
+          SPLUNKUSERNAME=admin
+          SPLUNKPASSWORD={{ splunk_admin_password }}
+          RECEIVING_INDEXER="{{ splunk_forward_host }}:{{ splunk_forward_port }}"
+          WINEVENTLOG_APP_ENABLE=1
+          WINEVENTLOG_SEC_ENABLE=1
+          WINEVENTLOG_SYS_ENABLE=1
+          WINEVENTLOG_FWD_ENABLE=1
+          WINEVENTLOG_SET_ENABLE=1
+          LAUNCHSPLUNK=1
+        state: present
+      when: not uf_win_bin.stat.exists
+
+    - name: Ensure UF outputs.conf
+      ansible.windows.win_copy:
+        dest: "{{ splunkforwarder_win_home }}\\etc\\system\\local\\outputs.conf"
+        content: |
+          [tcpout]
+          defaultGroup = soclab_indexers
+
+          [tcpout:soclab_indexers]
+          server = {{ splunk_forward_host }}:{{ splunk_forward_port }}
+
+          [tcpout-server://{{ splunk_forward_host }}:{{ splunk_forward_port }}]
+      notify: Restart UF Win
+
+    - name: Ensure UF inputs.conf (WinEventLog + Sysmon) — override Splunk_TA_windows defaults
+      ansible.windows.win_copy:
+        dest: "{{ splunkforwarder_win_home }}\\etc\\apps\\Splunk_TA_windows\\local\\inputs.conf"
+        content: |
+          [default]
+          host = {{ inventory_hostname }}
+
+          [WinEventLog://Security]
+          disabled = 0
+          index = wineventlog
+          renderXml = false
+
+          [WinEventLog://System]
+          disabled = 0
+          index = wineventlog
+          renderXml = false
+
+          [WinEventLog://Application]
+          disabled = 0
+          index = wineventlog
+          renderXml = false
+
+          [WinEventLog://Microsoft-Windows-Sysmon/Operational]
+          disabled = 0
+          index = sysmon
+          renderXml = false
+          source = XmlWinEventLog:Microsoft-Windows-Sysmon/Operational
+
+          [WinEventLog://Microsoft-Windows-PowerShell/Operational]
+          disabled = 0
+          index = wineventlog
+          renderXml = false
+
+          [WinEventLog://Windows PowerShell]
+          disabled = 0
+          index = wineventlog
+          renderXml = false
+      notify: Restart UF Win
+
+    - name: Ensure UF service running
+      ansible.windows.win_service:
+        name: SplunkForwarder
+        state: started
+        start_mode: auto
+
+    # -------------------- Sysmon --------------------
+    - name: Check Sysmon already installed
+      ansible.windows.win_service:
+        name: Sysmon64
+      register: sysmon_svc
+      failed_when: false
+
+    - name: Create Sysmon directory
+      ansible.windows.win_file:
+        path: "{{ sysmon_dir }}"
+        state: directory
+      when: sysmon_svc.exists is not defined or not sysmon_svc.exists
+
+    - name: Download Sysmon zip
+      ansible.windows.win_get_url:
+        url: "{{ sysmon_zip_url }}"
+        dest: "{{ sysmon_dir }}\\Sysmon.zip"
+      when: sysmon_svc.exists is not defined or not sysmon_svc.exists
+
+    - name: Extract Sysmon
+      community.windows.win_unzip:
+        src: "{{ sysmon_dir }}\\Sysmon.zip"
+        dest: "{{ sysmon_dir }}"
+      when: sysmon_svc.exists is not defined or not sysmon_svc.exists
+
+    - name: Download Olaf modular Sysmon config
+      ansible.windows.win_get_url:
+        url: "{{ sysmon_config_url }}"
+        dest: "{{ sysmon_dir }}\\sysmonconfig.xml"
+
+    - name: Install Sysmon service
+      ansible.windows.win_command: '"{{ sysmon_dir }}\Sysmon64.exe" -accepteula -i {{ sysmon_dir }}\sysmonconfig.xml'
+      when: sysmon_svc.exists is not defined or not sysmon_svc.exists
+      register: sysmon_install
+      changed_when: "'installed' in sysmon_install.stdout | lower or 'starting' in sysmon_install.stdout | lower"
+
+    - name: Update Sysmon config (if already installed)
+      ansible.windows.win_command: '"{{ sysmon_dir }}\Sysmon64.exe" -c {{ sysmon_dir }}\sysmonconfig.xml'
+      when: sysmon_svc.exists is defined and sysmon_svc.exists
+      register: sysmon_update
+      changed_when: "'configuration updated' in sysmon_update.stdout | lower"
+
+    - name: Ensure Sysmon service running
+      ansible.windows.win_service:
+        name: Sysmon64
+        state: started
+        start_mode: auto
+
+  handlers:
+    - name: Restart UF Win
+      ansible.windows.win_service:
+        name: SplunkForwarder
+        state: restarted
