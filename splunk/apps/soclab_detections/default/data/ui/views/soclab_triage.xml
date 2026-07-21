@@ -1,68 +1,68 @@
 <dashboard version="1.1" theme="dark">
-  <label>SOC Lab — Analyst Triage</label>
-  <description>Real-time view of correlated detections, mapped to MITRE ATT&amp;CK.</description>
+  <label>2. Analyst Triage</label>
+  <description>Notable event queue — start of shift view. Sort, filter, and drill into individual detections.</description>
+
+  <fieldset submitButton="false" autoRun="true">
+    <input type="time" token="time" searchWhenChanged="true">
+      <label>Time range</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+    <input type="dropdown" token="tactic_tok" searchWhenChanged="true">
+      <label>MITRE Tactic</label>
+      <default>*</default>
+      <choice value="*">All tactics</choice>
+      <fieldForLabel>mitre_tactic</fieldForLabel>
+      <fieldForValue>mitre_tactic</fieldForValue>
+      <search>
+        <query>index=notable earliest=-7d@d | stats count by mitre_tactic</query>
+      </search>
+    </input>
+    <input type="dropdown" token="host_tok" searchWhenChanged="true">
+      <label>Host</label>
+      <default>*</default>
+      <choice value="*">All hosts</choice>
+      <fieldForLabel>host</fieldForLabel>
+      <fieldForValue>host</fieldForValue>
+      <search>
+        <query>index=notable earliest=-7d@d | stats count by host</query>
+      </search>
+    </input>
+  </fieldset>
 
   <row>
     <panel>
-      <title>Notable Events — Last 24h</title>
+      <title>Queue Size</title>
       <single>
         <search>
-          <query>index=notable NOT eventtype=notable_suppression | stats count</query>
-          <earliest>-24h@h</earliest>
-          <latest>now</latest>
+          <query>index=notable mitre_tactic=$tactic_tok$ host=$host_tok$ | stats count</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
         </search>
-        <option name="colorBy">value</option>
-        <option name="rangeColors">["0x53a051","0xf1813f","0xdc4e41"]</option>
-        <option name="rangeValues">[10,50]</option>
       </single>
     </panel>
     <panel>
-      <title>Critical Severity — Last 24h</title>
+      <title>Unique Techniques</title>
       <single>
         <search>
-          <query>index=notable severity=critical | stats count</query>
-          <earliest>-24h@h</earliest>
-          <latest>now</latest>
+          <query>index=notable mitre_tactic=$tactic_tok$ host=$host_tok$ | stats dc(mitre_technique) as t</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
         </search>
-        <option name="colorBy">value</option>
-        <option name="rangeColors">["0x53a051","0xdc4e41"]</option>
-        <option name="rangeValues">[1]</option>
       </single>
     </panel>
     <panel>
-      <title>Distinct Hosts w/ Detections</title>
+      <title>Oldest Unresolved (min)</title>
       <single>
         <search>
-          <query>index=notable | stats dc(host) as hosts</query>
-          <earliest>-24h@h</earliest>
-          <latest>now</latest>
+          <query>index=notable mitre_tactic=$tactic_tok$ host=$host_tok$ | stats min(_time) as oldest | eval age_min=round((now()-oldest)/60,1) | table age_min</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
         </search>
+        <option name="unit">min</option>
       </single>
-    </panel>
-  </row>
-
-  <row>
-    <panel>
-      <title>Detections by MITRE Technique (24h)</title>
-      <chart>
-        <search>
-          <query>index=notable | stats count by mitre_technique | sort -count</query>
-          <earliest>-24h@h</earliest>
-          <latest>now</latest>
-        </search>
-        <option name="charting.chart">bar</option>
-      </chart>
-    </panel>
-    <panel>
-      <title>Detections by MITRE Tactic (24h)</title>
-      <chart>
-        <search>
-          <query>index=notable | stats count by mitre_tactic | sort -count</query>
-          <earliest>-24h@h</earliest>
-          <latest>now</latest>
-        </search>
-        <option name="charting.chart">pie</option>
-      </chart>
     </panel>
   </row>
 
@@ -71,9 +71,9 @@
       <title>Detection Timeline</title>
       <chart>
         <search>
-          <query>index=notable | timechart span=15m count by severity</query>
-          <earliest>-24h@h</earliest>
-          <latest>now</latest>
+          <query>index=notable mitre_tactic=$tactic_tok$ host=$host_tok$ | timechart span=5m count by mitre_technique</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
         </search>
         <option name="charting.chart">column</option>
         <option name="charting.chart.stackMode">stacked</option>
@@ -83,35 +83,40 @@
 
   <row>
     <panel>
-      <title>Recent Notable Events</title>
+      <title>Notable Event Queue — click row to investigate host</title>
       <table>
         <search>
-          <query>index=notable | table _time, host, mitre_technique, mitre_tactic, severity, rule_title, rule_description | sort -_time | head 50</query>
-          <earliest>-24h@h</earliest>
-          <latest>now</latest>
+          <query>index=notable mitre_tactic=$tactic_tok$ host=$host_tok$ | eval time=strftime(_time,"%H:%M:%S") | table time, host, mitre_technique, mitre_tactic, User, Image, CommandLine, src_ip, Account_Name | sort -_time</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
         </search>
+        <option name="count">50</option>
+        <option name="drilldown">row</option>
       </table>
+      <drilldown>
+        <link target="_blank">/app/soclab_detections/host_investigation?form.host_input=$row.host$&amp;form.time.earliest=$time.earliest$&amp;form.time.latest=$time.latest$</link>
+      </drilldown>
     </panel>
   </row>
 
   <row>
     <panel>
-      <title>Top Hosts by Detection Count</title>
+      <title>Top Attackers (external src_ip)</title>
       <table>
         <search>
-          <query>index=notable | stats count, values(mitre_technique) as techniques by host | sort -count</query>
-          <earliest>-24h@h</earliest>
-          <latest>now</latest>
+          <query>index=notable mitre_tactic=$tactic_tok$ host=$host_tok$ | search src_ip=* NOT src_ip IN ("-","127.0.0.1","::1") | stats count as detections, values(mitre_technique) as techniques by src_ip | sort -detections | head 15</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
         </search>
       </table>
     </panel>
     <panel>
-      <title>Top Failed Logon Sources (Brute Force Candidates)</title>
+      <title>Top Affected Users</title>
       <table>
         <search>
-          <query>(index=wineventlog EventCode=4625) OR (index=linux_auditd "Failed password") | eval src_ip=coalesce(src_ip, IpAddress) | stats count as failures by src_ip, host | sort -failures | head 20</query>
-          <earliest>-24h@h</earliest>
-          <latest>now</latest>
+          <query>index=notable mitre_tactic=$tactic_tok$ host=$host_tok$ | eval acct=coalesce(User, Account_Name, user, "-") | search NOT acct IN ("-","SYSTEM","NOT_TRANSLATED") | stats count as detections, values(mitre_technique) as techniques by acct | sort -detections | head 15</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
         </search>
       </table>
     </panel>

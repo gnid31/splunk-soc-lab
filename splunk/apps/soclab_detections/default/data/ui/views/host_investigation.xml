@@ -1,0 +1,168 @@
+<dashboard version="1.1" theme="dark">
+  <label>4. Host Investigation</label>
+  <description>Per-host drilldown. Everything you need to triage a single endpoint in one page.</description>
+
+  <fieldset submitButton="false" autoRun="true">
+    <input type="text" token="host_input" searchWhenChanged="true">
+      <label>Host</label>
+      <default>win-ep-01</default>
+    </input>
+    <input type="time" token="time" searchWhenChanged="true">
+      <label>Time range</label>
+      <default>
+        <earliest>-4h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
+
+  <row>
+    <panel>
+      <title>Notable Events on $host_input$</title>
+      <single>
+        <search>
+          <query>index=notable host=$host_input$ | stats count</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+        <option name="colorBy">value</option>
+        <option name="colorMode">block</option>
+        <option name="rangeColors">["0x53a051","0xf1813f","0xdc4e41"]</option>
+        <option name="rangeValues">[5,20]</option>
+      </single>
+    </panel>
+    <panel>
+      <title>Distinct MITRE Techniques</title>
+      <single>
+        <search>
+          <query>index=notable host=$host_input$ | stats dc(mitre_technique) as t</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+      </single>
+    </panel>
+    <panel>
+      <title>Total Sysmon/Audit Events</title>
+      <single>
+        <search>
+          <query>index=sysmon OR index=linux_auditd OR index=wineventlog host=$host_input$ | stats count</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+      </single>
+    </panel>
+    <panel>
+      <title>Distinct Processes Executed</title>
+      <single>
+        <search>
+          <query>index=sysmon EventCode=1 host=$host_input$ | stats dc(Image) as p</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+      </single>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Detections Timeline (this host)</title>
+      <chart>
+        <search>
+          <query>index=notable host=$host_input$ | timechart span=5m count by mitre_technique</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.stackMode">stacked</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>All Detections on Host</title>
+      <table>
+        <search>
+          <query>index=notable host=$host_input$ | eval time=strftime(_time,"%H:%M:%S") | table time mitre_technique mitre_tactic User Image CommandLine TargetObject src_ip Account_Name | sort -_time</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+        <option name="count">30</option>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Recent Process Creations (Sysmon EventCode=1)</title>
+      <table>
+        <search>
+          <query>index=sysmon EventCode=1 host=$host_input$ | eval time=strftime(_time,"%H:%M:%S") | table time User Image CommandLine ParentImage | sort -_time | head 30</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Top Executed Images</title>
+      <chart>
+        <search>
+          <query>index=sysmon EventCode=1 host=$host_input$ | stats count by Image | sort -count | head 10</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+        <option name="charting.chart">bar</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Suspicious Parent → Child Pairs</title>
+      <table>
+        <search>
+          <query>index=sysmon EventCode=1 host=$host_input$ ParentImage IN ("*\\WINWORD.EXE","*\\EXCEL.EXE","*\\POWERPNT.EXE","*\\OUTLOOK.EXE","*\\mshta.exe","*\\wscript.exe","*\\cscript.exe") | stats count by ParentImage Image | sort -count</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Network Connections (Sysmon EventCode=3)</title>
+      <table>
+        <search>
+          <query>index=sysmon EventCode=3 host=$host_input$ | rex "DestinationIp:\s+(?&lt;dst_ip&gt;[^\s\r\n]+)" | rex "DestinationPort:\s+(?&lt;dst_port&gt;\d+)" | rex "Image:\s+(?&lt;src_image&gt;[^\r\n]+)" | stats count values(dst_port) as ports by src_image dst_ip | sort -count | head 20</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Failed Logons on this Host</title>
+      <chart>
+        <search>
+          <query>(index=wineventlog EventCode=4625 host=$host_input$) OR (index=linux_auditd host=$host_input$ "Failed password") | timechart span=5m count</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+        <option name="charting.chart">column</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Sysmon Registry Changes (EventCode=13)</title>
+      <table>
+        <search>
+          <query>index=sysmon EventCode=13 host=$host_input$ | table _time User Image TargetObject Details | sort -_time | head 20</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+      </table>
+    </panel>
+  </row>
+</dashboard>

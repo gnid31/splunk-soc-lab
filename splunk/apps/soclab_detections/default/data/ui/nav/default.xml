@@ -1,0 +1,7 @@
+<nav search_view="search" color="#0057B8">
+  <view name="soc_overview" default="true" />
+  <view name="soclab_triage" />
+  <view name="mitre_coverage" />
+  <view name="host_investigation" />
+  <view name="search" />
+</nav>

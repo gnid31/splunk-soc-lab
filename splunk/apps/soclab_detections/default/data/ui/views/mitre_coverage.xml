@@ -1,0 +1,138 @@
+<dashboard version="1.1" theme="dark">
+  <label>3. MITRE ATT&amp;CK Coverage</label>
+  <description>Detection coverage across the ATT&amp;CK matrix. Grid layout by tactic — click a technique to pivot to detections.</description>
+
+  <fieldset submitButton="false" autoRun="true">
+    <input type="time" token="time" searchWhenChanged="true">
+      <label>Detection window</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
+
+  <row>
+    <panel>
+      <title>Coverage Summary</title>
+      <single>
+        <search>
+          <query>index=notable | stats dc(mitre_technique) as techniques</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+        <option name="unit">/ 12 covered</option>
+        <option name="colorBy">value</option>
+        <option name="colorMode">block</option>
+        <option name="rangeColors">["0xdc4e41","0xf1813f","0x53a051"]</option>
+        <option name="rangeValues">[3,7]</option>
+      </single>
+    </panel>
+    <panel>
+      <title>Techniques Firing</title>
+      <chart>
+        <search>
+          <query>index=notable | stats count by mitre_technique | sort -count</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+        <option name="charting.chart">bar</option>
+        <option name="charting.chart.showDataLabels">all</option>
+        <option name="charting.legend.placement">none</option>
+      </chart>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Initial Access</title>
+      <table>
+        <search>
+          <query>| makeresults | eval technique=split("T1566.001|Spearphishing Attachment", "@") | mvexpand technique | eval technique_id=mvindex(split(technique, "|"),0), name=mvindex(split(technique, "|"),1) | join type=left technique_id [search index=notable earliest=$time.earliest$ latest=$time.latest$ | rex field=mitre_technique "^(?&lt;technique_id&gt;T\d+(?:\.\d+)?)" | stats count as detections by technique_id] | fillnull value=0 detections | eval status=if(detections&gt;0,"FIRING","idle") | table technique_id name detections status</query>
+        </search>
+        <option name="drilldown">row</option>
+      </table>
+      <drilldown>
+        <link target="_blank">/app/soclab_detections/soclab_triage?form.time.earliest=$time.earliest$&amp;form.time.latest=$time.latest$</link>
+      </drilldown>
+    </panel>
+    <panel>
+      <title>Execution</title>
+      <table>
+        <search>
+          <query>| makeresults | eval x=split("T1059.001|PowerShell,T1059.003|Windows Command Shell", ",") | mvexpand x | eval technique_id=mvindex(split(x, "|"),0), name=mvindex(split(x, "|"),1) | join type=left technique_id [search index=notable mitre_tactic=Execution earliest=$time.earliest$ latest=$time.latest$ | rex field=mitre_technique "^(?&lt;technique_id&gt;T\d+(?:\.\d+)?)" | stats count as detections by technique_id] | fillnull value=0 detections | eval status=if(detections&gt;0,"FIRING","idle") | table technique_id name detections status</query>
+        </search>
+      </table>
+    </panel>
+    <panel>
+      <title>Persistence</title>
+      <table>
+        <search>
+          <query>| makeresults | eval x=split("T1547.001|Run Keys,T1053.005|Scheduled Task", ",") | mvexpand x | eval technique_id=mvindex(split(x, "|"),0), name=mvindex(split(x, "|"),1) | join type=left technique_id [search index=notable mitre_tactic=Persistence earliest=$time.earliest$ latest=$time.latest$ | rex field=mitre_technique "^(?&lt;technique_id&gt;T\d+(?:\.\d+)?)" | stats count as detections by technique_id] | fillnull value=0 detections | eval status=if(detections&gt;0,"FIRING","idle") | table technique_id name detections status</query>
+        </search>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Defense Evasion</title>
+      <table>
+        <search>
+          <query>| makeresults | eval x=split("T1070.001|Clear Windows Event Logs", ",") | mvexpand x | eval technique_id=mvindex(split(x, "|"),0), name=mvindex(split(x, "|"),1) | join type=left technique_id [search index=notable mitre_tactic="Defense Evasion" earliest=$time.earliest$ latest=$time.latest$ | rex field=mitre_technique "^(?&lt;technique_id&gt;T\d+(?:\.\d+)?)" | stats count as detections by technique_id] | fillnull value=0 detections | eval status=if(detections&gt;0,"FIRING","idle") | table technique_id name detections status</query>
+        </search>
+      </table>
+    </panel>
+    <panel>
+      <title>Credential Access</title>
+      <table>
+        <search>
+          <query>| makeresults | eval x=split("T1003.001|LSASS Memory,T1110|Brute Force", ",") | mvexpand x | eval technique_id=mvindex(split(x, "|"),0), name=mvindex(split(x, "|"),1) | join type=left technique_id [search index=notable mitre_tactic="Credential Access" earliest=$time.earliest$ latest=$time.latest$ | rex field=mitre_technique "^(?&lt;technique_id&gt;T\d+(?:\.\d+)?)" | stats count as detections by technique_id] | fillnull value=0 detections | eval status=if(detections&gt;0,"FIRING","idle") | table technique_id name detections status</query>
+        </search>
+      </table>
+    </panel>
+    <panel>
+      <title>Discovery</title>
+      <table>
+        <search>
+          <query>| makeresults | eval x=split("T1087|Account Discovery", ",") | mvexpand x | eval technique_id=mvindex(split(x, "|"),0), name=mvindex(split(x, "|"),1) | join type=left technique_id [search index=notable mitre_tactic=Discovery earliest=$time.earliest$ latest=$time.latest$ | rex field=mitre_technique "^(?&lt;technique_id&gt;T\d+(?:\.\d+)?)" | stats count as detections by technique_id] | fillnull value=0 detections | eval status=if(detections&gt;0,"FIRING","idle") | table technique_id name detections status</query>
+        </search>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>Lateral Movement</title>
+      <table>
+        <search>
+          <query>| makeresults | eval x=split("T1021.002|SMB/Admin Shares", ",") | mvexpand x | eval technique_id=mvindex(split(x, "|"),0), name=mvindex(split(x, "|"),1) | join type=left technique_id [search index=notable mitre_tactic="Lateral Movement" earliest=$time.earliest$ latest=$time.latest$ | rex field=mitre_technique "^(?&lt;technique_id&gt;T\d+(?:\.\d+)?)" | stats count as detections by technique_id] | fillnull value=0 detections | eval status=if(detections&gt;0,"FIRING","idle") | table technique_id name detections status</query>
+        </search>
+      </table>
+    </panel>
+    <panel>
+      <title>Command &amp; Control</title>
+      <table>
+        <search>
+          <query>| makeresults | eval x=split("T1071.001|Web Protocols", ",") | mvexpand x | eval technique_id=mvindex(split(x, "|"),0), name=mvindex(split(x, "|"),1) | join type=left technique_id [search index=notable mitre_tactic="Command and Control" earliest=$time.earliest$ latest=$time.latest$ | rex field=mitre_technique "^(?&lt;technique_id&gt;T\d+(?:\.\d+)?)" | stats count as detections by technique_id] | fillnull value=0 detections | eval status=if(detections&gt;0,"FIRING","idle") | table technique_id name detections status</query>
+        </search>
+      </table>
+    </panel>
+  </row>
+
+  <row>
+    <panel>
+      <title>All Techniques Detected — Detection Count</title>
+      <chart>
+        <search>
+          <query>index=notable | stats count by mitre_tactic mitre_technique | sort mitre_tactic mitre_technique</query>
+          <earliest>$time.earliest$</earliest>
+          <latest>$time.latest$</latest>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.stackMode">stacked</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+  </row>
+</dashboard>
