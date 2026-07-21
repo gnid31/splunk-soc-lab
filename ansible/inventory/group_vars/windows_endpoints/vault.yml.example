@@ -1,0 +1,3 @@
+---
+# Encrypt this file with: ansible-vault encrypt inventory/group_vars/windows_endpoints_vault.yml
+vault_win_ep_01_password: "REPLACE_WITH_YOUR_PASSWORD"

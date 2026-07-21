@@ -1,0 +1,19 @@
+---
+splunk_version: "9.3.1"
+splunk_build: "0b8748f38ee0"
+splunk_uf_version: "9.3.1"
+splunk_uf_build: "0b8748f38ee0"
+
+splunk_home: /opt/splunk
+splunkforwarder_home: /opt/splunkforwarder
+splunk_user: splunk
+splunk_group: splunk
+
+splunk_indexes:
+  - wineventlog
+  - sysmon
+  - linux_auditd
+  - suricata
+  - zeek
+
+splunk_admin_password: "{{ vault_splunk_admin_password | default('ChangeMe_SoCLab_2026!') }}"

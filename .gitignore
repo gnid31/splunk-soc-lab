@@ -1,0 +1,17 @@
+*.retry
+*.log
+*.tar.gz
+*.pyc
+__pycache__/
+.vscode/
+.idea/
+ansible/inventory/*_vault
+ansible/.vault_pass
+ansible/*.log
+splunk-*.tgz
+splunkforwarder-*.tgz
+splunkforwarder-*.msi
+*_secret*
+*.pem
+*.key
+!ansible/files/*.key.example
