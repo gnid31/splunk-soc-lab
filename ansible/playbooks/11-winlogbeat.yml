@@ -1,0 +1,97 @@
+---
+# Install + configure Winlogbeat on Windows endpoint.
+# Forwards WinEventLog + Sysmon to Logstash on VPS :5044.
+- name: Deploy Winlogbeat on Windows endpoint
+  hosts: windows_endpoints
+  vars:
+    elk_version: "8.14.3"
+    winlogbeat_url: "https://artifacts.elastic.co/downloads/beats/winlogbeat/winlogbeat-{{ elk_version }}-windows-x86_64.zip"
+    winlogbeat_dir: 'C:\winlogbeat'
+    logstash_host: "43.228.215.234"
+    logstash_port: 5044
+
+  tasks:
+    - name: Check Winlogbeat already installed
+      ansible.windows.win_stat:
+        path: "{{ winlogbeat_dir }}\\winlogbeat.exe"
+      register: wb_bin
+
+    - name: Create winlogbeat directory
+      ansible.windows.win_file:
+        path: "{{ winlogbeat_dir }}"
+        state: directory
+      when: not wb_bin.stat.exists
+
+    - name: Download Winlogbeat zip
+      ansible.windows.win_get_url:
+        url: "{{ winlogbeat_url }}"
+        dest: "{{ winlogbeat_dir }}\\winlogbeat.zip"
+        timeout: 300
+      when: not wb_bin.stat.exists
+
+    - name: Extract Winlogbeat
+      community.windows.win_unzip:
+        src: "{{ winlogbeat_dir }}\\winlogbeat.zip"
+        dest: "{{ winlogbeat_dir }}"
+        creates: "{{ winlogbeat_dir }}\\winlogbeat.exe"
+
+    - name: Move files from extracted subdir if needed
+      ansible.windows.win_shell: |
+        $sub = Get-ChildItem -Path "{{ winlogbeat_dir }}" -Directory | Where-Object { $_.Name -like "winlogbeat*" } | Select-Object -First 1
+        if ($sub) {
+          Get-ChildItem -Path $sub.FullName | Move-Item -Destination "{{ winlogbeat_dir }}" -Force
+          Remove-Item $sub.FullName -Recurse -Force
+        }
+      when: not wb_bin.stat.exists
+
+    - name: Write winlogbeat.yml
+      ansible.windows.win_copy:
+        dest: "{{ winlogbeat_dir }}\\winlogbeat.yml"
+        content: |
+          winlogbeat.event_logs:
+            - name: Application
+              ignore_older: 72h
+            - name: System
+              ignore_older: 72h
+            - name: Security
+              ignore_older: 72h
+            - name: Microsoft-Windows-Sysmon/Operational
+              ignore_older: 72h
+            - name: Microsoft-Windows-PowerShell/Operational
+              ignore_older: 72h
+            - name: Windows PowerShell
+              ignore_older: 72h
+
+          output.logstash:
+            hosts: ["{{ logstash_host }}:{{ logstash_port }}"]
+
+          processors:
+            - add_host_metadata:
+                when.not.contains.tags: forwarded
+            - add_cloud_metadata: ~
+
+          tags: ["windows", "sysmon", "soclab"]
+
+          logging.level: info
+          logging.to_files: true
+          logging.files:
+            path: C:\ProgramData\winlogbeat\logs
+            name: winlogbeat
+            keepfiles: 7
+
+    - name: Check Winlogbeat service exists
+      ansible.windows.win_service:
+        name: winlogbeat
+      register: wb_svc
+      failed_when: false
+
+    - name: Install Winlogbeat service
+      ansible.windows.win_shell: |
+        powershell -ExecutionPolicy Bypass -File "{{ winlogbeat_dir }}\install-service-winlogbeat.ps1"
+      when: not wb_svc.exists | default(false)
+
+    - name: Ensure Winlogbeat service running
+      ansible.windows.win_service:
+        name: winlogbeat
+        state: started
+        start_mode: auto

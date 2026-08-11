@@ -1,0 +1,164 @@
+---
+# Install Elasticsearch + Kibana + Logstash on VPS.
+# Elastic 8.x with built-in TLS/auth disabled for lab simplicity.
+- name: Deploy ELK Stack on VPS
+  hosts: splunk_server
+  become: true
+  vars:
+    elk_version: "8.14.3"
+    elastic_user: elastic
+    elastic_password: "SoCLab_ELK_2026!"
+    kibana_port: 5601
+    es_port: 9200
+    logstash_beats_port: 5044
+
+  tasks:
+    - name: Install prerequisites
+      ansible.builtin.apt:
+        name: [apt-transport-https, curl, gnupg, ca-certificates, openjdk-17-jdk-headless]
+        state: present
+        update_cache: true
+
+    - name: Add Elastic GPG key
+      ansible.builtin.shell: |
+        curl -fsSL https://artifacts.elastic.co/GPG-KEY-elasticsearch \
+          | gpg --dearmor -o /usr/share/keyrings/elastic-archive-keyring.gpg
+      args:
+        creates: /usr/share/keyrings/elastic-archive-keyring.gpg
+
+    - name: Add Elastic 8.x APT repo
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/elastic-8.x.list
+        content: |
+          deb [signed-by=/usr/share/keyrings/elastic-archive-keyring.gpg] https://artifacts.elastic.co/packages/8.x/apt stable main
+        mode: "0644"
+
+    - name: Install Elasticsearch
+      ansible.builtin.apt:
+        name: "elasticsearch={{ elk_version }}"
+        state: present
+        update_cache: true
+
+    - name: Configure Elasticsearch for lab (disable security, listen all)
+      ansible.builtin.copy:
+        dest: /etc/elasticsearch/elasticsearch.yml
+        content: |
+          cluster.name: soclab
+          node.name: vps-node-1
+          network.host: 0.0.0.0
+          http.port: 9200
+          xpack.security.enabled: false
+          xpack.security.enrollment.enabled: false
+          xpack.security.http.ssl.enabled: false
+          xpack.security.transport.ssl.enabled: false
+          discovery.type: single-node
+          path.data: /var/lib/elasticsearch
+          path.logs: /var/log/elasticsearch
+        mode: "0660"
+        owner: root
+        group: elasticsearch
+      notify: Restart Elasticsearch
+
+    - name: Configure Elasticsearch JVM heap (2GB for 8GB VPS)
+      ansible.builtin.copy:
+        dest: /etc/elasticsearch/jvm.options.d/heap.options
+        content: |
+          -Xms2g
+          -Xmx2g
+        mode: "0644"
+
+    - name: Enable + start Elasticsearch
+      ansible.builtin.systemd:
+        name: elasticsearch
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Wait for Elasticsearch HTTP
+      ansible.builtin.wait_for:
+        host: 127.0.0.1
+        port: 9200
+        timeout: 120
+
+    - name: Install Kibana
+      ansible.builtin.apt:
+        name: "kibana={{ elk_version }}"
+        state: present
+
+    - name: Configure Kibana
+      ansible.builtin.copy:
+        dest: /etc/kibana/kibana.yml
+        content: |
+          server.host: "0.0.0.0"
+          server.port: 5601
+          server.name: "soclab-kibana"
+          elasticsearch.hosts: ["http://127.0.0.1:9200"]
+          xpack.security.enabled: false
+        mode: "0660"
+        owner: root
+        group: kibana
+      notify: Restart Kibana
+
+    - name: Enable + start Kibana
+      ansible.builtin.systemd:
+        name: kibana
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Install Logstash
+      ansible.builtin.apt:
+        name: "logstash=1:{{ elk_version }}-1"
+        state: present
+
+    - name: Configure Logstash Beats input pipeline
+      ansible.builtin.copy:
+        dest: /etc/logstash/conf.d/01-beats-input.conf
+        content: |
+          input {
+            beats {
+              port => 5044
+            }
+          }
+        mode: "0644"
+
+    - name: Configure Logstash Elasticsearch output
+      ansible.builtin.copy:
+        dest: /etc/logstash/conf.d/99-elasticsearch-output.conf
+        content: |
+          output {
+            elasticsearch {
+              hosts => ["http://127.0.0.1:9200"]
+              index => "%{[@metadata][beat]}-%{[@metadata][version]}-%{+YYYY.MM.dd}"
+            }
+          }
+        mode: "0644"
+
+    - name: Enable + start Logstash
+      ansible.builtin.systemd:
+        name: logstash
+        state: started
+        enabled: true
+        daemon_reload: true
+
+    - name: Open firewall ports (UFW)
+      community.general.ufw:
+        rule: allow
+        port: "{{ item }}"
+        proto: tcp
+      loop:
+        - "9200"
+        - "5601"
+        - "5044"
+      ignore_errors: true
+
+  handlers:
+    - name: Restart Elasticsearch
+      ansible.builtin.systemd:
+        name: elasticsearch
+        state: restarted
+
+    - name: Restart Kibana
+      ansible.builtin.systemd:
+        name: kibana
+        state: restarted
